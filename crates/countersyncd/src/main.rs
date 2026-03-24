@@ -24,7 +24,7 @@ use crate::actor::{
 
 // Internal exit codes
 use countersyncd::exit_codes::{EXIT_FAILURE, EXIT_OTEL_EXPORT_RETRIES_EXHAUSTED, EXIT_SUCCESS};
-use crate::utilities::{set_comm_capacity, ChannelLabel};
+use crate::utilities::{set_comm_capacity, set_comm_log_interval_secs, ChannelLabel};
 
 /// Initialize logging based on command line arguments
 fn init_logging(log_level: &str, log_format: &str) {
@@ -171,6 +171,31 @@ struct Args {
     )]
     log_format: String,
 
+    /// Interval (seconds) between periodic comm stats log lines (channel queue stats)
+    #[arg(
+        long,
+        default_value = "600",
+        help = "Interval in seconds for logging comm stats (channel lengths). Use a shorter value (e.g. 60) when verifying HFT processing slowness"
+    )]
+    comm_stats_interval: u64,
+
+    /// Netlink socket receive buffer size in bytes (0 = OS default). Increase to reduce ENOBUFS under high HFT load.
+    #[arg(
+        long,
+        default_value = "4194304",
+        help = "Netlink SO_RCVBUF size in bytes (0 = default). Use 4MB or higher if you see 'Netlink receive buffer full (ENOBUFS)'"
+    )]
+    netlink_rcvbuf: usize,
+
+    /// Socket readiness poll interval in milliseconds. Shorter than HFT sample interval (e.g. 10 ms) reduces ENOBUFS.
+    #[arg(
+        long,
+        default_value = "5",
+        value_parser = clap::value_parser!(u64).range(1..),
+        help = "Poll interval in ms for netlink socket readiness. Default 5, minimum 1"
+    )]
+    socket_readiness_timeout_ms: u64,
+
     /// Channel capacity for data_netlink to ipfix communication (IPFIX records)
     #[arg(
         long,
@@ -263,9 +288,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
     }
     info!(
+        "Comm stats log interval: {} seconds",
+        args.comm_stats_interval
+    );
+    info!(
+        "Socket readiness poll interval: {} ms",
+        args.socket_readiness_timeout_ms
+    );
+    info!(
         "Channel capacities - ipfix_records: {}, stats_reporter: {}, counter_db: {}, otel: {}",
         args.data_netlink_capacity, args.stats_reporter_capacity, args.counter_db_capacity, args.otel_capacity
     );
+
+    set_comm_log_interval_secs(args.comm_stats_interval);
 
     // Create communication channels between actors with configurable capacities
     let (command_sender, command_receiver) = channel(10); // Keep small buffer for commands
@@ -288,7 +323,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("Using netlink family: '{}', group: '{}'", family, group);
 
     // Initialize and configure actors
-    let mut data_netlink = DataNetlinkActor::new(family.as_str(), group.as_str(), command_receiver);
+    let mut data_netlink = DataNetlinkActor::new(
+        family.as_str(),
+        group.as_str(),
+        command_receiver,
+        args.netlink_rcvbuf,
+        args.socket_readiness_timeout_ms,
+    );
     data_netlink.add_recipient(ipfix_record_sender);
 
     let control_netlink = ControlNetlinkActor::new(family.as_str(), command_sender);
