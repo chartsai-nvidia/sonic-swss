@@ -30,6 +30,7 @@ namespace mock_orch_test
             void RemoveVnetMap();
             void AddOutboundRoutingGroup();
             void AddOutboundRoutingEntry(bool expect_empty = true);
+            void RemoveOutboundRoutingEntry(bool expect_empty = true);
             void AddTunnel();
             void AddVnetMapPL(bool expect_empty = true);
             void RemoveVnetMapPL(bool expect_empty = true);
